@@ -1,0 +1,55 @@
+- name: update yum
+  action: "{{ ansible_pkg_mgr }} state=latest"
+- name: Install epel-release
+  action: "{{ ansible_pkg_mgr }} name=amazon-linux-extras state=latest"
+- name: Install docker
+  action: "{{ ansible_pkg_mgr }} name=docker state=present"
+- name: Start docker
+  service: name=docker state=started
+- name: Install Kubernetes
+  shell: |
+        cat <<EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
+        [kubernetes]
+        name=Kubernetes
+        baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+        enabled=1
+        gpgcheck=1
+        repo_gpgcheck=1
+        gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+        EOF
+
+        sudo setenforce 0
+        sudo sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config
+        sudo yum install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
+        sudo systemctl enable kubelet && sudo systemctl start kubelet
+  args:
+    executable: /bin/bash
+
+- name: Install Kubeadm init
+  shell: |
+        sudo kubeadm init --pod-network-cidr=10.244.0.0/16
+
+        mkdir -p $HOME/.kube
+        sudo cp /etc/kubernetes/admin.conf $HOME/.kube/config
+        sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+        kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+  args:
+    executable: /bin/bash
+
+- name: Create k8s master join text
+  shell: |
+        cmd='sudo kubeadm join'
+        host_ip=(`hostname -I`)
+        cmd=$cmd' '$host_ip':6443 --token '
+        token=(`sudo kubeadm token list | awk '{print $1}' | tail -n 1`)
+        cmd=$cmd$token' --discovery-token-ca-cert-hash sha256:'
+        discovery_token=(`openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //'`)
+        cmd=$cmd$discovery_token
+        echo $cmd > join.txt
+
+        mkdir -p $HOME/.kube
+        sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+        sudo chown $(id -u):$(id -g) $HOME/.kube/config
+  args:
+    executable: /bin/bash
